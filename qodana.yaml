@@ -1,0 +1,5 @@
+dotnet:
+  solution: BenchmarkDotNet.sln
+
+profile:
+  name: qodana.recommended
