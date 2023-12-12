@@ -23,11 +23,11 @@ The `--filter` or just `-f` allows you to filter the benchmarks by their full na
 
 Examples:
 
-1. Run all benchmarks from System.Memory namespace: `-f System.Memory*`
-2. Run all benchmarks: `-f *`
-3. Run all benchmarks from ClassA and ClassB `-f *ClassA* *ClassB*`
+1. Run all benchmarks from System.Memory namespace: `-f 'System.Memory*'`
+2. Run all benchmarks: `-f '*'`
+3. Run all benchmarks from ClassA and ClassB `-f '*ClassA*' '*ClassB*'`
 
-**Note**: If you would like to **join** all the results into a **single summary**, you need to put `--join`. For example: `-f *ClassA* *ClassB* --join`
+**Note**: If you would like to **join** all the results into a **single summary**, you need to put `--join`. For example: `-f '*ClassA*' '*ClassB*' --join`
 
 ## List of benchmarks
 
@@ -184,6 +184,21 @@ Now, the default settings are: `WarmupCount=1` but you might still overwrite it 
 
 ```log
 dotnet run -c Release -- --warmupCount 2
+```
+
+## Response files support
+
+Benchmark.NET supports parsing parameters via response files. for example you can create file `run.rsp` with following content
+```
+--warmupCount 1
+--minIterationCount 9
+--maxIterationCount 12
+```
+
+and run it using `dotnet run -c Release -- @run.rsp`. It would be equivalent to running following command line
+
+```log
+dotnet run -c Release -- --warmupCount 1 --minIterationCount 9 --maxIterationCount 12
 ```
 
 ## Statistical Test

@@ -23,8 +23,10 @@ namespace BenchmarkDotNet.Toolchains.CsProj
         [PublicAPI] public static readonly IToolchain NetCoreApp50 = From(NetCoreAppSettings.NetCoreApp50);
         [PublicAPI] public static readonly IToolchain NetCoreApp60 = From(NetCoreAppSettings.NetCoreApp60);
         [PublicAPI] public static readonly IToolchain NetCoreApp70 = From(NetCoreAppSettings.NetCoreApp70);
+        [PublicAPI] public static readonly IToolchain NetCoreApp80 = From(NetCoreAppSettings.NetCoreApp80);
+        [PublicAPI] public static readonly IToolchain NetCoreApp90 = From(NetCoreAppSettings.NetCoreApp90);
 
-        private CsProjCoreToolchain(string name, IGenerator generator, IBuilder builder, IExecutor executor, string customDotNetCliPath)
+        internal CsProjCoreToolchain(string name, IGenerator generator, IBuilder builder, IExecutor executor, string customDotNetCliPath)
             : base(name, generator, builder, executor)
         {
             CustomDotNetCliPath = customDotNetCliPath;

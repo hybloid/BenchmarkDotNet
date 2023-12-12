@@ -95,7 +95,7 @@ namespace BenchmarkDotNet.Diagnostics.Windows.Tracing
             var heapParser = new HeapTraceProviderTraceEventParser(eventSource);
             // We index by heap address and then within the heap we remember the allocation stack
             var heaps = new Dictionary<Address, Dictionary<Address, long>>();
-            Dictionary<Address, long> lastHeapAllocs = null;
+            Dictionary<Address, long>? lastHeapAllocs = null;
 
             Address lastHeapHandle = 0;
 
@@ -217,7 +217,7 @@ namespace BenchmarkDotNet.Diagnostics.Windows.Tracing
                     return;
                 }
 
-                // Heap is dieing, kill all objects in it.
+                // Heap is dying, kill all objects in it.
                 var allocs = lastHeapAllocs;
                 if (data.HeapHandle != lastHeapHandle)
                 {
@@ -262,8 +262,8 @@ namespace BenchmarkDotNet.Diagnostics.Windows.Tracing
 
             return new[]
             {
-                new Metric(new AllocatedNativeMemoryDescriptor(), memoryAllocatedPerOperation),
-                new Metric(new NativeMemoryLeakDescriptor(), memoryLeakPerOperation)
+                new Metric(AllocatedNativeMemoryDescriptor.Instance, memoryAllocatedPerOperation),
+                new Metric(NativeMemoryLeakDescriptor.Instance, memoryLeakPerOperation)
             };
         }
 

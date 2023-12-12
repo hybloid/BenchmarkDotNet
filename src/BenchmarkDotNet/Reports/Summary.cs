@@ -47,7 +47,8 @@ namespace BenchmarkDotNet.Reports
             TimeSpan totalTime,
             CultureInfo cultureInfo,
             ImmutableArray<ValidationError> validationErrors,
-            ImmutableArray<IColumnHidingRule> columnHidingRules)
+            ImmutableArray<IColumnHidingRule> columnHidingRules,
+            SummaryStyle? summaryStyle = null)
         {
             Title = title;
             ResultsDirectoryPath = resultsDirectoryPath;
@@ -64,7 +65,7 @@ namespace BenchmarkDotNet.Reports
             BenchmarksCases = Orderer.GetSummaryOrder(reports.Select(report => report.BenchmarkCase).ToImmutableArray(), this).ToImmutableArray(); // we sort it first
             Reports = BenchmarksCases.Select(b => ReportMap[b]).ToImmutableArray(); // we use sorted collection to re-create reports list
             BaseliningStrategy = BaseliningStrategy.Create(BenchmarksCases);
-            Style = GetConfiguredSummaryStyleOrDefaultOne(BenchmarksCases).WithCultureInfo(cultureInfo);
+            Style = (summaryStyle ?? GetConfiguredSummaryStyleOrDefaultOne(BenchmarksCases)).WithCultureInfo(cultureInfo);
             Table = GetTable(Style);
             AllRuntimes = BuildAllRuntimes(HostEnvironmentInfo, Reports);
         }
@@ -74,7 +75,7 @@ namespace BenchmarkDotNet.Reports
         /// <summary>
         /// Returns a report for the given benchmark or null if there is no a corresponded report.
         /// </summary>
-        public BenchmarkReport this[BenchmarkCase benchmarkCase] => ReportMap.GetValueOrDefault(benchmarkCase);
+        public BenchmarkReport? this[BenchmarkCase benchmarkCase] => ReportMap.GetValueOrDefault(benchmarkCase);
 
         public bool HasCriticalValidationErrors => ValidationErrors.Any(validationError => validationError.IsCritical);
 
@@ -107,7 +108,7 @@ namespace BenchmarkDotNet.Reports
 
             foreach (var benchmarkReport in reports)
             {
-                string runtime = benchmarkReport.GetRuntimeInfo();
+                string? runtime = benchmarkReport.GetRuntimeInfo();
                 if (runtime != null)
                 {
                     string jobId = benchmarkReport.BenchmarkCase.Job.ResolvedId;
@@ -128,20 +129,17 @@ namespace BenchmarkDotNet.Reports
 
         internal SummaryTable GetTable(SummaryStyle style) => new SummaryTable(this, style);
 
-        [CanBeNull]
-        public string GetLogicalGroupKey(BenchmarkCase benchmarkCase)
+        public string? GetLogicalGroupKey(BenchmarkCase benchmarkCase)
             => Orderer.GetLogicalGroupKey(BenchmarksCases, benchmarkCase);
 
         public bool IsBaseline(BenchmarkCase benchmarkCase)
             => BaseliningStrategy.IsBaseline(benchmarkCase);
 
-        [CanBeNull]
-        public BenchmarkCase GetBaseline(string logicalGroupKey)
+        public BenchmarkCase? GetBaseline(string? logicalGroupKey)
             => BenchmarksCases
                 .Where(b => GetLogicalGroupKey(b) == logicalGroupKey)
                 .FirstOrDefault(IsBaseline);
 
-        [NotNull]
         public IEnumerable<BenchmarkCase> GetNonBaselines(string logicalGroupKey)
             => BenchmarksCases
                 .Where(b => GetLogicalGroupKey(b) == logicalGroupKey)
@@ -160,7 +158,11 @@ namespace BenchmarkDotNet.Reports
         private static SummaryStyle GetConfiguredSummaryStyleOrDefaultOne(ImmutableArray<BenchmarkCase> benchmarkCases)
             => benchmarkCases
                    .Where(benchmark => benchmark.Config.SummaryStyle != SummaryStyle.Default
-                          && benchmark.Config.SummaryStyle != null) // Paranoid
+#nullable disable
+                                       // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract ConditionIsAlwaysTrueOrFalse
+                                       // TODO: remove this check once the nullability migration is finished
+                                       && benchmark.Config.SummaryStyle != null) // Paranoid
+#nullable enable
                    .Select(benchmark => benchmark.Config.SummaryStyle)
                    .Distinct()
                    .SingleOrDefault()

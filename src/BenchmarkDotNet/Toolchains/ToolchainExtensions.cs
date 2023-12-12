@@ -1,6 +1,7 @@
 ﻿using System;
 using BenchmarkDotNet.Environments;
 using BenchmarkDotNet.Extensions;
+using BenchmarkDotNet.Helpers;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Portability;
 using BenchmarkDotNet.Running;
@@ -27,27 +28,53 @@ namespace BenchmarkDotNet.Toolchains
                 : GetToolchain(
                     job.ResolveValue(EnvironmentMode.RuntimeCharacteristic, EnvironmentResolver.Instance),
                     descriptor,
-                    job.HasValue(InfrastructureMode.NuGetReferencesCharacteristic) || job.HasValue(InfrastructureMode.BuildConfigurationCharacteristic));
+                    job.HasValue(InfrastructureMode.NuGetReferencesCharacteristic)
+                    || job.HasValue(InfrastructureMode.BuildConfigurationCharacteristic)
+                    || job.HasValue(InfrastructureMode.ArgumentsCharacteristic));
 
-        internal static IToolchain GetToolchain(this Runtime runtime, Descriptor descriptor = null, bool preferMsBuildToolchains = false)
+        internal static IToolchain GetToolchain(this Runtime runtime, Descriptor? descriptor = null, bool preferMsBuildToolchains = false)
         {
             switch (runtime)
             {
                 case ClrRuntime clrRuntime:
-                    if (RuntimeInformation.IsNetCore || preferMsBuildToolchains)
-                        return clrRuntime.RuntimeMoniker != RuntimeMoniker.NotRecognized
-                            ? GetToolchain(clrRuntime.RuntimeMoniker)
-                            : CsProjClassicNetToolchain.From(clrRuntime.MsBuildMoniker);
+                    if (!preferMsBuildToolchains && RuntimeInformation.IsFullFramework
+                        && RuntimeInformation.GetCurrentRuntime().MsBuildMoniker == runtime.MsBuildMoniker)
+                    {
+                        return RoslynToolchain.Instance;
+                    }
 
-                    return RoslynToolchain.Instance;
+                    return clrRuntime.RuntimeMoniker != RuntimeMoniker.NotRecognized
+                        ? GetToolchain(clrRuntime.RuntimeMoniker)
+                        : CsProjClassicNetToolchain.From(clrRuntime.MsBuildMoniker);
 
                 case MonoRuntime mono:
                     if (RuntimeInformation.IsAndroid())
                         return InProcessEmitToolchain.Instance;
-                    if (RuntimeInformation.IsiOS())
+                    if (RuntimeInformation.IsIOS())
                         return InProcessNoEmitToolchain.Instance;
                     if (!string.IsNullOrEmpty(mono.AotArgs))
                         return MonoAotToolchain.Instance;
+                    if (mono.IsDotNetBuiltIn)
+                        if (RuntimeInformation.IsNewMono)
+                        {
+                            // It's a .NET SDK with Mono as default VM.
+                            // Publishing self-contained apps might not work like in https://github.com/dotnet/performance/issues/2787.
+                            // In such case, we are going to use default .NET toolchain that is just going to perform dotnet build,
+                            // which internally will result in creating Mono-based app.
+                            return mono.RuntimeMoniker switch
+                            {
+                                RuntimeMoniker.Mono60 => GetToolchain(RuntimeMoniker.Net60),
+                                RuntimeMoniker.Mono70 => GetToolchain(RuntimeMoniker.Net70),
+                                RuntimeMoniker.Mono80 => GetToolchain(RuntimeMoniker.Net80),
+                                RuntimeMoniker.Mono90 => GetToolchain(RuntimeMoniker.Net90),
+                                _ => CsProjCoreToolchain.From(new NetCoreAppSettings(mono.MsBuildMoniker, null, mono.Name))
+                            };
+                        }
+                        else
+                        {
+                            return MonoToolchain.From(
+                                new NetCoreAppSettings(targetFrameworkMoniker: mono.MsBuildMoniker, runtimeFrameworkVersion: null, name: mono.Name));
+                        }
 
                     return RoslynToolchain.Instance;
 
@@ -123,11 +150,35 @@ namespace BenchmarkDotNet.Toolchains
                 case RuntimeMoniker.Net70:
                     return CsProjCoreToolchain.NetCoreApp70;
 
+                case RuntimeMoniker.Net80:
+                    return CsProjCoreToolchain.NetCoreApp80;
+
+                case RuntimeMoniker.Net90:
+                    return CsProjCoreToolchain.NetCoreApp90;
+
                 case RuntimeMoniker.NativeAot60:
                     return NativeAotToolchain.Net60;
 
                 case RuntimeMoniker.NativeAot70:
                     return NativeAotToolchain.Net70;
+
+                case RuntimeMoniker.NativeAot80:
+                    return NativeAotToolchain.Net80;
+
+                case RuntimeMoniker.NativeAot90:
+                    return NativeAotToolchain.Net90;
+
+                case RuntimeMoniker.Mono60:
+                    return MonoToolchain.Mono60;
+
+                case RuntimeMoniker.Mono70:
+                    return MonoToolchain.Mono70;
+
+                case RuntimeMoniker.Mono80:
+                    return MonoToolchain.Mono80;
+
+                case RuntimeMoniker.Mono90:
+                    return MonoToolchain.Mono90;
 
                 default:
                     throw new ArgumentOutOfRangeException(nameof(runtimeMoniker), runtimeMoniker, "RuntimeMoniker not supported");

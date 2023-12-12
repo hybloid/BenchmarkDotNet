@@ -71,6 +71,7 @@ namespace BenchmarkDotNet.Exporters.Xml
         public string MethodTitle => report.BenchmarkCase.Descriptor.WorkloadMethodDisplayInfo;
         public string Parameters => report.BenchmarkCase.Parameters.PrintInfo;
         public Statistics Statistics => report.ResultStatistics;
+        public IEnumerable<Metric> Metrics => report.Metrics.Values;
         public GcStats Memory => new GcStats()
         {
             Gen0Collections = report.GcStats.Gen0Collections,
@@ -102,6 +103,6 @@ namespace BenchmarkDotNet.Exporters.Xml
         public int Gen1Collections { get; set; }
         public int Gen2Collections { get; set; }
         public long TotalOperations { get; set; }
-        public long BytesAllocatedPerOperation { get; set; }
+        public long? BytesAllocatedPerOperation { get; set; }
     }
 }

@@ -5,8 +5,6 @@ using System.Linq;
 using System.Reflection;
 using JetBrains.Annotations;
 
-using NotNullAttribute = JetBrains.Annotations.NotNullAttribute;
-
 namespace BenchmarkDotNet.Characteristics
 {
     // TODO: better naming.
@@ -46,7 +44,7 @@ namespace BenchmarkDotNet.Characteristics
             sharedValues = new Dictionary<Characteristic, object>();
         }
 
-        protected CharacteristicObject(string id) : this()
+        protected CharacteristicObject(string? id) : this()
         {
             if (!string.IsNullOrEmpty(id))
             {
@@ -100,7 +98,7 @@ namespace BenchmarkDotNet.Characteristics
 
         #region Properties
 
-        private CharacteristicObject Owner { get; set; }
+        private CharacteristicObject? Owner { get; set; }
 
         protected CharacteristicObject OwnerOrSelf => Owner ?? this;
 
@@ -343,8 +341,8 @@ namespace BenchmarkDotNet.Characteristics
                 GetCharacteristicsToApply(other));
 
         private CharacteristicObject ApplyCore(
-            [CanBeNull] CharacteristicObject other,
-            [NotNull] IEnumerable<Characteristic> characteristicsToApply)
+            CharacteristicObject? other,
+            IEnumerable<Characteristic> characteristicsToApply)
         {
             AssertNotFrozen();
 

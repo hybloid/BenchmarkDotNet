@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using BenchmarkDotNet.Characteristics;
 using BenchmarkDotNet.Extensions;
+using BenchmarkDotNet.Helpers;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Portability;
@@ -73,9 +74,24 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
             if (!restoreResult.IsSuccess)
                 return BuildResult.Failure(GenerateResult, restoreResult.AllInformation);
 
-            var buildResult = BuildNoRestore();
-            if (!buildResult.IsSuccess && RetryFailedBuildWithNoDeps) // if we fail to do the full build, we try with --no-dependencies
+            // On our CI (Windows+.NET 7), Integration tests take to much time because each benchmark run rebuilds the BenchmarkDotNet itself.
+            // To reduce the total duration of the CI workflows, we build all the projects without dependencies
+            bool forceNoDependencies = XUnitHelper.IsIntegrationTest.Value &&
+                                       RuntimeInformation.IsWindows() &&
+                                       RuntimeInformation.IsNetCore;
+
+            DotNetCliCommandResult buildResult;
+            if (forceNoDependencies)
                 buildResult = BuildNoRestoreNoDependencies();
+            else
+            {
+                buildResult = BuildNoRestore();
+                if (!buildResult.IsSuccess && RetryFailedBuildWithNoDeps) // if we fail to do the full build, we try with --no-dependencies
+                    buildResult = BuildNoRestoreNoDependencies();
+            }
+
+            if (!buildResult.IsSuccess)
+                return BuildResult.Failure(GenerateResult, buildResult.AllInformation);
 
             return buildResult.ToBuildResult(GenerateResult);
         }
@@ -150,7 +166,7 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
         internal static IEnumerable<string> GetAddPackagesCommands(BuildPartition buildPartition)
             => GetNuGetAddPackageCommands(buildPartition.RepresentativeBenchmarkCase, buildPartition.Resolver);
 
-        internal static string GetRestoreCommand(ArtifactsPaths artifactsPaths, BuildPartition buildPartition, string extraArguments = null, string binLogSuffix = null)
+        internal static string GetRestoreCommand(ArtifactsPaths artifactsPaths, BuildPartition buildPartition, string? extraArguments = null, string? binLogSuffix = null)
             => new StringBuilder()
                 .AppendArgument("restore")
                 .AppendArgument(string.IsNullOrEmpty(artifactsPaths.PackagesDirectoryName) ? string.Empty : $"--packages \"{artifactsPaths.PackagesDirectoryName}\"")
@@ -160,7 +176,7 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
                 .AppendArgument(GetMsBuildBinLogArgument(buildPartition, binLogSuffix))
                 .ToString();
 
-        internal static string GetBuildCommand(ArtifactsPaths artifactsPaths, BuildPartition buildPartition, string extraArguments = null, string binLogSuffix = null)
+        internal static string GetBuildCommand(ArtifactsPaths artifactsPaths, BuildPartition buildPartition, string? extraArguments = null, string? binLogSuffix = null)
             => new StringBuilder()
                 .AppendArgument($"build -c {buildPartition.BuildConfiguration}") // we don't need to specify TFM, our auto-generated project contains always single one
                 .AppendArgument(GetCustomMsBuildArguments(buildPartition.RepresentativeBenchmarkCase, buildPartition.Resolver))
@@ -170,7 +186,7 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
                 .AppendArgument(GetMsBuildBinLogArgument(buildPartition, binLogSuffix))
                 .ToString();
 
-        internal static string GetPublishCommand(ArtifactsPaths artifactsPaths, BuildPartition buildPartition, string extraArguments = null, string binLogSuffix = null)
+        internal static string GetPublishCommand(ArtifactsPaths artifactsPaths, BuildPartition buildPartition, string? extraArguments = null, string? binLogSuffix = null)
             => new StringBuilder()
                 .AppendArgument($"publish -c {buildPartition.BuildConfiguration}") // we don't need to specify TFM, our auto-generated project contains always single one
                 .AppendArgument(GetCustomMsBuildArguments(buildPartition.RepresentativeBenchmarkCase, buildPartition.Resolver))

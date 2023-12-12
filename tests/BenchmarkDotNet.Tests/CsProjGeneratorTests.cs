@@ -11,12 +11,18 @@ using BenchmarkDotNet.Toolchains.CsProj;
 using JetBrains.Annotations;
 using Xunit;
 using BenchmarkDotNet.Extensions;
+using System.Xml;
 
 namespace BenchmarkDotNet.Tests
 {
     public class CsProjGeneratorTests
     {
         private FileInfo TestAssemblyFileInfo = new FileInfo(typeof(CsProjGeneratorTests).Assembly.Location);
+        private const string runtimeHostConfigurationOptionChunk = """
+<ItemGroup>
+  <RuntimeHostConfigurationOption Include="System.Runtime.Loader.UseRidGraph" Value="true" />
+</ItemGroup>
+""";
 
         [Theory]
         [InlineData("net471", false)]
@@ -57,13 +63,17 @@ namespace BenchmarkDotNet.Tests
         {
             var sut = new CsProjGenerator(targetFrameworkMoniker, null, null, null, isNetCore);
 
-            using (var reader = new StringReader(csProjContent))
-            {
-                var (customProperties, sdkName) = sut.GetSettingsThatNeedsToBeCopied(reader, TestAssemblyFileInfo);
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml(csProjContent);
+            var (customProperties, sdkName) = sut.GetSettingsThatNeedToBeCopied(xmlDoc, TestAssemblyFileInfo);
 
-                Assert.Equal(expectedSdkValue, sdkName);
-                Assert.Empty(customProperties);
-            }
+            Assert.Equal(expectedSdkValue, sdkName);
+            Assert.Empty(customProperties);
+        }
+
+        private static void AssertCustomProperties(string expected, string actual)
+        {
+            Assert.Equal(expected.Replace("\r", "").Replace("\n", Environment.NewLine), actual);
         }
 
         [Fact]
@@ -79,13 +89,14 @@ namespace BenchmarkDotNet.Tests
 ";
             var sut = new CsProjGenerator("netcoreapp3.0", null, null, null, true);
 
-            using (var reader = new StringReader(withUseWpfTrue))
-            {
-                var (customProperties, sdkName) = sut.GetSettingsThatNeedsToBeCopied(reader, TestAssemblyFileInfo);
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml(withUseWpfTrue);
+            var (customProperties, sdkName) = sut.GetSettingsThatNeedToBeCopied(xmlDoc, TestAssemblyFileInfo);
 
-                Assert.Equal("<UseWpf>true</UseWpf>" + Environment.NewLine, customProperties);
-                Assert.Equal("Microsoft.NET.Sdk", sdkName);
-            }
+            AssertCustomProperties(@"<PropertyGroup>
+  <UseWpf>true</UseWpf>
+</PropertyGroup>", customProperties);
+            Assert.Equal("Microsoft.NET.Sdk", sdkName);
         }
 
         [Fact]
@@ -108,13 +119,14 @@ namespace BenchmarkDotNet.Tests
 
             var sut = new CsProjGenerator("netcoreapp3.0", null, null, null, true);
 
-            using (var reader = new StringReader(importingAbsolutePath))
-            {
-                var (customProperties, sdkName) = sut.GetSettingsThatNeedsToBeCopied(reader, TestAssemblyFileInfo);
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml(importingAbsolutePath);
+            var (customProperties, sdkName) = sut.GetSettingsThatNeedToBeCopied(xmlDoc, TestAssemblyFileInfo);
 
-                Assert.Equal("<LangVersion>9.9</LangVersion>" + Environment.NewLine, customProperties);
-                Assert.Equal("Microsoft.NET.Sdk", sdkName);
-            }
+            AssertCustomProperties(@"<PropertyGroup>
+  <LangVersion>9.9</LangVersion>
+</PropertyGroup>", customProperties);
+            Assert.Equal("Microsoft.NET.Sdk", sdkName);
 
             File.Delete(propsFilePath);
         }
@@ -139,15 +151,34 @@ namespace BenchmarkDotNet.Tests
 
             var sut = new CsProjGenerator("netcoreapp3.0", null, null, null, true);
 
-            using (var reader = new StringReader(importingRelativePath))
-            {
-                var (customProperties, sdkName) = sut.GetSettingsThatNeedsToBeCopied(reader, TestAssemblyFileInfo);
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml(importingRelativePath);
+            var (customProperties, sdkName) = sut.GetSettingsThatNeedToBeCopied(xmlDoc, TestAssemblyFileInfo);
 
-                Assert.Equal("<LangVersion>9.9</LangVersion>" + Environment.NewLine, customProperties);
-                Assert.Equal("Microsoft.NET.Sdk", sdkName);
-            }
+            AssertCustomProperties(@"<PropertyGroup>
+  <LangVersion>9.9</LangVersion>
+</PropertyGroup>", customProperties);
+            Assert.Equal("Microsoft.NET.Sdk", sdkName);
 
             File.Delete(propsFilePath);
+        }
+
+        [Fact]
+        public void RuntimeHostConfigurationOptionIsCopied()
+        {
+            string source = $@"
+<Project Sdk=""Microsoft.NET.Sdk"">
+{runtimeHostConfigurationOptionChunk}
+</Project>";
+
+            var sut = new CsProjGenerator("netcoreapp3.0", null, null, null, true);
+
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml(source);
+            var (customProperties, sdkName) = sut.GetSettingsThatNeedToBeCopied(xmlDoc, TestAssemblyFileInfo);
+
+            AssertCustomProperties(runtimeHostConfigurationOptionChunk, customProperties);
+            Assert.Equal("Microsoft.NET.Sdk", sdkName);
         }
 
         [Fact]
@@ -155,19 +186,13 @@ namespace BenchmarkDotNet.Tests
         {
             const string programName = "testProgram";
             var config = ManualConfig.CreateEmpty().CreateImmutableConfig();
-            var benchmarkMethod =
-                typeof(MockFactory.MockBenchmarkClass)
-                    .GetTypeInfo()
-                    .GetMethods()
-                    .Single(method => method.Name == nameof(MockFactory.MockBenchmarkClass.Foo));
-
 
             //Simulate loading an assembly from a stream
             var benchmarkDotNetAssembly = typeof(MockFactory.MockBenchmarkClass).GetTypeInfo().Assembly;
             var streamLoadedAssembly = Assembly.Load(File.ReadAllBytes(benchmarkDotNetAssembly.Location));
-            var assemblyType = streamLoadedAssembly.GetRunnableBenchmarks().Select(type => type).FirstOrDefault();
+            var assemblyType = streamLoadedAssembly.GetRunnableBenchmarks().Select(type => type).First();
 
-            var target = new Descriptor(assemblyType, benchmarkMethod);
+            var target = new Descriptor(assemblyType, MockFactory.MockMethodInfo);
             var benchmarkCase = BenchmarkCase.Create(target, Job.Default, null, config);
 
             var benchmarks = new[] { new BenchmarkBuildInfo(benchmarkCase, config.CreateImmutableConfig(), 999) };
@@ -182,12 +207,7 @@ namespace BenchmarkDotNet.Tests
         public void TestAssemblyFilePathIsUsedWhenTheAssemblyLocationIsNotEmpty()
         {
             const string programName = "testProgram";
-            var benchmarkMethod =
-                typeof(MockFactory.MockBenchmarkClass)
-                    .GetTypeInfo()
-                    .GetMethods()
-                    .Single(method => method.Name == nameof(MockFactory.MockBenchmarkClass.Foo));
-            var target = new Descriptor(typeof(MockFactory.MockBenchmarkClass), benchmarkMethod);
+            var target = new Descriptor(MockFactory.MockType, MockFactory.MockMethodInfo);
             var benchmarkCase = BenchmarkCase.Create(target, Job.Default, null, ManualConfig.CreateEmpty().CreateImmutableConfig());
             var benchmarks = new[] { new BenchmarkBuildInfo(benchmarkCase, ManualConfig.CreateEmpty().CreateImmutableConfig(), 0) };
             var projectGenerator = new SteamLoadedBuildPartition("netcoreapp3.0", null, null, null, true);

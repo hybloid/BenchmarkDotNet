@@ -46,7 +46,7 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
                 stopwatch.Stop();
                 outputReader.StopRead();
 
-                parameters.Logger.WriteLineInfo($"// command took {stopwatch.Elapsed.TotalSeconds:0.##}s and exited with {process.ExitCode}");
+                parameters.Logger.WriteLineInfo($"// command took {stopwatch.Elapsed.TotalSeconds.ToInvariantString("0.##")} sec and exited with {process.ExitCode}");
 
                 return process.ExitCode <= 0
                     ? DotNetCliCommandResult.Success(stopwatch.Elapsed, outputReader.GetOutputText())
@@ -54,7 +54,7 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
             }
         }
 
-        internal static string GetDotNetSdkVersion()
+        internal static string? GetDotNetSdkVersion()
         {
             using (var process = new Process { StartInfo = BuildStartInfo(customDotNetCliPath: null, workingDirectory: string.Empty, arguments: "--version") })
             using (new ConsoleExitHandler(process, NullLogger.Instance))
@@ -98,8 +98,8 @@ namespace BenchmarkDotNet.Toolchains.DotNetCli
             }
         }
 
-        internal static ProcessStartInfo BuildStartInfo(string customDotNetCliPath, string workingDirectory, string arguments,
-            IReadOnlyList<EnvironmentVariable> environmentVariables = null, bool redirectStandardInput = false, bool redirectStandardError = true, bool redirectStandardOutput = true)
+        internal static ProcessStartInfo BuildStartInfo(string? customDotNetCliPath, string workingDirectory, string arguments,
+            IReadOnlyList<EnvironmentVariable>? environmentVariables = null, bool redirectStandardInput = false, bool redirectStandardError = true, bool redirectStandardOutput = true)
         {
             const string dotnetMultiLevelLookupEnvVarName = "DOTNET_MULTILEVEL_LOOKUP";
 

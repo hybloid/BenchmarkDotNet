@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using BenchmarkDotNet.Analysers;
 using BenchmarkDotNet.Characteristics;
 using BenchmarkDotNet.Columns;
@@ -10,6 +11,7 @@ using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Diagnosers;
 using BenchmarkDotNet.Engines;
 using BenchmarkDotNet.Environments;
+using BenchmarkDotNet.EventProcessors;
 using BenchmarkDotNet.Exporters;
 using BenchmarkDotNet.Extensions;
 using BenchmarkDotNet.Helpers;
@@ -35,23 +37,36 @@ namespace BenchmarkDotNet.Running
 
         internal static Summary[] Run(BenchmarkRunInfo[] benchmarkRunInfos)
         {
+            using var taskbarProgress = new TaskbarProgress();
+            taskbarProgress.SetState(TaskbarProgressState.Indeterminate);
+
             var resolver = DefaultResolver;
             var artifactsToCleanup = new List<string>();
 
-            var title = GetTitle(benchmarkRunInfos);
             var rootArtifactsFolderPath = GetRootArtifactsFolderPath(benchmarkRunInfos);
+            var maxTitleLength = RuntimeInformation.IsWindows()
+                ? 254 - rootArtifactsFolderPath.Length
+                : int.MaxValue;
+            var title = GetTitle(benchmarkRunInfos, maxTitleLength);
             var resultsFolderPath = GetResultsFolderPath(rootArtifactsFolderPath, benchmarkRunInfos);
             var logFilePath = Path.Combine(rootArtifactsFolderPath, title + ".log");
+            var idToResume = GetIdToResume(rootArtifactsFolderPath, title, benchmarkRunInfos);
 
             using (var streamLogger = new StreamLogger(GetLogFileStreamWriter(benchmarkRunInfos, logFilePath)))
             {
                 var compositeLogger = CreateCompositeLogger(benchmarkRunInfos, streamLogger);
+                var eventProcessor = new CompositeEventProcessor(benchmarkRunInfos);
+
+                eventProcessor.OnStartValidationStage();
 
                 compositeLogger.WriteLineInfo("// Validating benchmarks:");
 
-                var (supportedBenchmarks, validationErrors) = GetSupportedBenchmarks(benchmarkRunInfos, compositeLogger, resolver);
+                var (supportedBenchmarks, validationErrors) = GetSupportedBenchmarks(benchmarkRunInfos, resolver);
 
                 validationErrors.AddRange(Validate(supportedBenchmarks));
+
+                foreach (var validationError in validationErrors)
+                    eventProcessor.OnValidationError(validationError);
 
                 PrintValidationErrors(compositeLogger, validationErrors);
 
@@ -61,15 +76,23 @@ namespace BenchmarkDotNet.Running
                 if (!supportedBenchmarks.Any(benchmarks => benchmarks.BenchmarksCases.Any()))
                     return new[] { Summary.ValidationFailed(title, resultsFolderPath, logFilePath) };
 
+                eventProcessor.OnEndValidationStage();
+
                 int totalBenchmarkCount = supportedBenchmarks.Sum(benchmarkInfo => benchmarkInfo.BenchmarksCases.Length);
-                int benchmarksToRunCount = totalBenchmarkCount;
+                int benchmarksToRunCount = totalBenchmarkCount - (idToResume + 1); // ids are indexed from 0
                 compositeLogger.WriteLineHeader("// ***** BenchmarkRunner: Start   *****");
                 compositeLogger.WriteLineHeader($"// ***** Found {totalBenchmarkCount} benchmark(s) in total *****");
                 var globalChronometer = Chronometer.Start();
 
+
                 var buildPartitions = BenchmarkPartitioner.CreateForBuild(supportedBenchmarks, resolver);
-                var buildResults = BuildInParallel(compositeLogger, rootArtifactsFolderPath, buildPartitions, in globalChronometer);
+                eventProcessor.OnStartBuildStage(buildPartitions);
+                var buildResults = BuildInParallel(compositeLogger, rootArtifactsFolderPath, buildPartitions, in globalChronometer, eventProcessor);
+
                 var allBuildsHaveFailed = buildResults.Values.All(buildResult => !buildResult.IsBuildSuccess);
+
+                eventProcessor.OnEndBuildStage();
+                eventProcessor.OnStartRunStage();
 
                 try
                 {
@@ -84,8 +107,21 @@ namespace BenchmarkDotNet.Running
 
                     foreach (var benchmarkRunInfo in supportedBenchmarks) // we run them in the old order now using the new build artifacts
                     {
-                        var summary = Run(benchmarkRunInfo, benchmarkToBuildResult, resolver, compositeLogger, artifactsToCleanup,
-                            resultsFolderPath, logFilePath, totalBenchmarkCount, in runsChronometer, ref benchmarksToRunCount);
+                        if (idToResume >= 0)
+                        {
+                            var benchmarkWithHighestIdForGivenType = benchmarkRunInfo.BenchmarksCases.Last();
+                            if (benchmarkToBuildResult[benchmarkWithHighestIdForGivenType].Id.Value <= idToResume)
+                            {
+                                compositeLogger.WriteLineInfo($"Skipping {benchmarkRunInfo.BenchmarksCases.Length} benchmark(s) defined by {benchmarkRunInfo.Type.GetCorrectCSharpTypeName()}.");
+                                continue;
+                            }
+                        }
+
+                        eventProcessor.OnStartRunBenchmarksInType(benchmarkRunInfo.Type, benchmarkRunInfo.BenchmarksCases);
+                        var summary = Run(benchmarkRunInfo, benchmarkToBuildResult, resolver, compositeLogger, eventProcessor, artifactsToCleanup,
+                            resultsFolderPath, logFilePath, totalBenchmarkCount, in runsChronometer, ref benchmarksToRunCount,
+                            taskbarProgress);
+                        eventProcessor.OnEndRunBenchmarksInType(benchmarkRunInfo.Type, summary);
 
                         if (!benchmarkRunInfo.Config.Options.IsSet(ConfigOptions.JoinSummary))
                             PrintSummary(compositeLogger, benchmarkRunInfo.Config, summary);
@@ -126,8 +162,11 @@ namespace BenchmarkDotNet.Running
                     }
 
                     compositeLogger.WriteLineHeader("// * Artifacts cleanup *");
-                    Cleanup(new HashSet<string>(artifactsToCleanup.Distinct()));
+                    Cleanup(compositeLogger, new HashSet<string>(artifactsToCleanup.Distinct()));
+                    compositeLogger.WriteLineInfo("Artifacts cleanup is finished");
                     compositeLogger.Flush();
+
+                    eventProcessor.OnEndRunStage();
                 }
             }
         }
@@ -136,12 +175,14 @@ namespace BenchmarkDotNet.Running
                                    Dictionary<BenchmarkCase, (BenchmarkId benchmarkId, BuildResult buildResult)> buildResults,
                                    IResolver resolver,
                                    ILogger logger,
+                                   EventProcessor eventProcessor,
                                    List<string> artifactsToCleanup,
                                    string resultsFolderPath,
                                    string logFilePath,
                                    int totalBenchmarkCount,
                                    in StartedClock runsChronometer,
-                                   ref int benchmarksToRunCount)
+                                   ref int benchmarksToRunCount,
+                                   TaskbarProgress taskbarProgress)
         {
             var runStart = runsChronometer.GetElapsed();
 
@@ -151,14 +192,12 @@ namespace BenchmarkDotNet.Running
             var cultureInfo = config.CultureInfo ?? DefaultCultureInfo.Instance;
             var reports = new List<BenchmarkReport>();
             string title = GetTitle(new[] { benchmarkRunInfo });
-            var consoleTitle = RuntimeInformation.IsWindows() ? Console.Title : string.Empty;
+            using var consoleTitler = new ConsoleTitler($"{benchmarksToRunCount}/{totalBenchmarkCount} Remaining");
 
             logger.WriteLineInfo($"// Found {benchmarks.Length} benchmarks:");
             foreach (var benchmark in benchmarks)
                 logger.WriteLineInfo($"//   {benchmark.DisplayInfo}");
             logger.WriteLine();
-
-            UpdateTitle(totalBenchmarkCount, benchmarksToRunCount);
 
             using (var powerManagementApplier = new PowerManagementApplier(logger))
             {
@@ -179,7 +218,10 @@ namespace BenchmarkDotNet.Running
                         if (!config.Options.IsSet(ConfigOptions.KeepBenchmarkFiles))
                             artifactsToCleanup.AddRange(buildResult.ArtifactsToCleanup);
 
+                        eventProcessor.OnStartRunBenchmark(benchmark);
                         var report = RunCore(benchmark, info.benchmarkId, logger, resolver, buildResult);
+                        eventProcessor.OnEndRunBenchmark(benchmark, report);
+
                         if (report.AllMeasurements.Any(m => m.Operations == 0))
                             throw new InvalidOperationException("An iteration with 'Operations == 0' detected");
                         reports.Add(report);
@@ -200,7 +242,7 @@ namespace BenchmarkDotNet.Running
                         reports.Add(new BenchmarkReport(false, benchmark, buildResult, buildResult, default, default));
 
                         if (buildResult.GenerateException != null)
-                            logger.WriteLineError($"// Generate Exception: {buildResult.GenerateException.Message}");
+                            logger.WriteLineError($"// Generate Exception: {buildResult.GenerateException}");
                         else if (!buildResult.IsBuildSuccess && buildResult.TryToExplainFailureReason(out string reason))
                             logger.WriteLineError($"// Build Error: {reason}");
                         else if (buildResult.ErrorMessage != null)
@@ -224,13 +266,8 @@ namespace BenchmarkDotNet.Running
 
                     benchmarksToRunCount -= stop ? benchmarks.Length - i : 1;
 
-                    LogProgress(logger, in runsChronometer, totalBenchmarkCount, benchmarksToRunCount);
+                    LogProgress(logger, in runsChronometer, totalBenchmarkCount, benchmarksToRunCount, consoleTitler, taskbarProgress);
                 }
-            }
-
-            if (RuntimeInformation.IsWindows())
-            {
-                Console.Title = consoleTitle;
             }
 
             var runEnd = runsChronometer.GetElapsed();
@@ -333,7 +370,7 @@ namespace BenchmarkDotNet.Running
             return validationErrors.ToImmutableArray();
         }
 
-        private static Dictionary<BuildPartition, BuildResult> BuildInParallel(ILogger logger, string rootArtifactsFolderPath, BuildPartition[] buildPartitions, in StartedClock globalChronometer)
+        private static Dictionary<BuildPartition, BuildResult> BuildInParallel(ILogger logger, string rootArtifactsFolderPath, BuildPartition[] buildPartitions, in StartedClock globalChronometer, EventProcessor eventProcessor)
         {
             logger.WriteLineHeader($"// ***** Building {buildPartitions.Length} exe(s) in Parallel: Start   *****");
 
@@ -343,8 +380,18 @@ namespace BenchmarkDotNet.Running
 
             var buildResults = buildPartitions
                 .AsParallel()
-                .Select(buildPartition => (buildPartition, buildResult: Build(buildPartition, rootArtifactsFolderPath, buildLogger)))
-                .ToDictionary(result => result.buildPartition, result => result.buildResult);
+                .Select(buildPartition => (Partition: buildPartition, Result: Build(buildPartition, rootArtifactsFolderPath, buildLogger)))
+                .AsSequential() // Ensure that build completion events are processed sequentially
+                .Select(build =>
+                {
+                    // If the generation was successful, but the build was not, we will try building sequentially
+                    // so don't send the OnBuildComplete event yet.
+                    if (buildPartitions.Length <= 1 || !build.Result.IsGenerateSuccess || build.Result.IsBuildSuccess)
+                        eventProcessor.OnBuildComplete(build.Partition, build.Result);
+
+                    return build;
+                })
+                .ToDictionary(build => build.Partition, build => build.Result);
 
             var afterParallelBuild = globalChronometer.GetElapsed();
 
@@ -356,8 +403,15 @@ namespace BenchmarkDotNet.Running
             logger.WriteLineHeader("// ***** Failed to build in Parallel, switching to sequential build   *****");
 
             foreach (var buildPartition in buildPartitions)
-                if (buildResults[buildPartition].IsGenerateSuccess && !buildResults[buildPartition].IsBuildSuccess && !buildResults[buildPartition].TryToExplainFailureReason(out string _))
-                    buildResults[buildPartition] = Build(buildPartition, rootArtifactsFolderPath, buildLogger);
+            {
+                if (buildResults[buildPartition].IsGenerateSuccess && !buildResults[buildPartition].IsBuildSuccess)
+                {
+                    if (!buildResults[buildPartition].TryToExplainFailureReason(out string _))
+                        buildResults[buildPartition] = Build(buildPartition, rootArtifactsFolderPath, buildLogger);
+
+                    eventProcessor.OnBuildComplete(buildPartition, buildResults[buildPartition]);
+                }
+            }
 
             var afterSequentialBuild = globalChronometer.GetElapsed();
 
@@ -532,11 +586,11 @@ namespace BenchmarkDotNet.Running
         private static void LogTotalTime(ILogger logger, TimeSpan time, int executedBenchmarksCount, string message = "Total time")
             => logger.WriteLineStatistic($"{message}: {time.ToFormattedTotalTime(DefaultCultureInfo.Instance)}, executed benchmarks: {executedBenchmarksCount}");
 
-        private static (BenchmarkRunInfo[], List<ValidationError>) GetSupportedBenchmarks(BenchmarkRunInfo[] benchmarkRunInfos, ILogger logger, IResolver resolver)
+        private static (BenchmarkRunInfo[], List<ValidationError>) GetSupportedBenchmarks(BenchmarkRunInfo[] benchmarkRunInfos, IResolver resolver)
         {
             List<ValidationError> validationErrors = new ();
 
-            var benchmarksRunInfo = benchmarkRunInfos.Select(info => new BenchmarkRunInfo(
+            var runInfos = benchmarkRunInfos.Select(info => new BenchmarkRunInfo(
                     info.BenchmarksCases.Where(benchmark =>
                     {
                         var errors = benchmark.GetToolchain().Validate(benchmark, resolver).ToArray();
@@ -548,7 +602,7 @@ namespace BenchmarkDotNet.Running
                 .Where(infos => infos.BenchmarksCases.Any())
                 .ToArray();
 
-            return (benchmarkRunInfos, validationErrors);
+            return (runInfos, validationErrors);
         }
 
         private static string GetRootArtifactsFolderPath(BenchmarkRunInfo[] benchmarkRunInfos)
@@ -564,7 +618,7 @@ namespace BenchmarkDotNet.Running
             return customPath != default ? customPath.CreateIfNotExists() : defaultPath;
         }
 
-        private static string GetTitle(BenchmarkRunInfo[] benchmarkRunInfos)
+        private static string GetTitle(BenchmarkRunInfo[] benchmarkRunInfos, int desiredMaxLength = int.MaxValue)
         {
             // few types might have the same name: A.Name and B.Name will both report "Name"
             // in that case, we can not use the type name as file name because they would be getting overwritten #529
@@ -573,8 +627,22 @@ namespace BenchmarkDotNet.Running
             var fileNamePrefix = (uniqueTargetTypes.Length == 1)
                 ? FolderNameHelper.ToFolderName(uniqueTargetTypes[0])
                 : "BenchmarkRun";
+            string dateTimeSuffix = DateTime.Now.ToString(DateTimeFormat);
 
-            return $"{fileNamePrefix}-{DateTime.Now.ToString(DateTimeFormat)}";
+            int maxFileNamePrefixLength = desiredMaxLength - dateTimeSuffix.Length - 1;
+            if (maxFileNamePrefixLength <= 2)
+                return dateTimeSuffix;
+
+            if (fileNamePrefix.Length > maxFileNamePrefixLength)
+            {
+                int length1 = maxFileNamePrefixLength / 2;
+                int length2 = maxFileNamePrefixLength - length1 - 1;
+                fileNamePrefix = fileNamePrefix.Substring(0, length1) +
+                                 "-" +
+                                 fileNamePrefix.Substring(fileNamePrefix.Length - length2, length2);
+            }
+
+            return $"{fileNamePrefix}-{dateTimeSuffix}";
         }
 
         private static string GetResultsFolderPath(string rootArtifactsFolderPath, BenchmarkRunInfo[] benchmarkRunInfos)
@@ -612,7 +680,7 @@ namespace BenchmarkDotNet.Running
             return new CompositeLogger(loggers.Values.ToImmutableHashSet());
         }
 
-        private static void Cleanup(HashSet<string> artifactsToCleanup)
+        private static void Cleanup(ILogger logger, HashSet<string> artifactsToCleanup)
         {
             foreach (string path in artifactsToCleanup)
             {
@@ -627,7 +695,7 @@ namespace BenchmarkDotNet.Running
                         File.Delete(path);
                     }
                 }
-                catch
+                catch (Exception)
                 {
                     // sth is locking our auto-generated files
                     // there is very little we can do about it
@@ -635,15 +703,7 @@ namespace BenchmarkDotNet.Running
             }
         }
 
-        private static void UpdateTitle(int totalBenchmarkCount, int benchmarksToRunCount)
-        {
-            if (!Console.IsOutputRedirected && (RuntimeInformation.IsWindows() || RuntimeInformation.IsLinux() || RuntimeInformation.IsMacOSX()))
-            {
-                Console.Title = $"{benchmarksToRunCount}/{totalBenchmarkCount} Remaining";
-            }
-        }
-
-        private static void LogProgress(ILogger logger, in StartedClock runsChronometer, int totalBenchmarkCount, int benchmarksToRunCount)
+        private static void LogProgress(ILogger logger, in StartedClock runsChronometer, int totalBenchmarkCount, int benchmarksToRunCount, ConsoleTitler consoleTitler, TaskbarProgress taskbarProgress)
         {
             int executedBenchmarkCount = totalBenchmarkCount - benchmarksToRunCount;
             TimeSpan fromNow = GetEstimatedFinishTime(runsChronometer, benchmarksToRunCount, executedBenchmarkCount);
@@ -652,10 +712,9 @@ namespace BenchmarkDotNet.Running
                 $" Estimated finish {estimatedEnd:yyyy-MM-dd H:mm} ({(int)fromNow.TotalHours}h {fromNow.Minutes}m from now) **";
             logger.WriteLineHeader(message);
 
-            if (!Console.IsOutputRedirected && (RuntimeInformation.IsWindows() || RuntimeInformation.IsLinux() || RuntimeInformation.IsMacOSX()))
-            {
-                Console.Title = $"{benchmarksToRunCount}/{totalBenchmarkCount} Remaining - {(int)fromNow.TotalHours}h {fromNow.Minutes}m to finish";
-            }
+            consoleTitler.UpdateTitle($"{benchmarksToRunCount}/{totalBenchmarkCount} Remaining - {(int)fromNow.TotalHours}h {fromNow.Minutes}m to finish");
+
+            taskbarProgress.SetProgress((float)executedBenchmarkCount / totalBenchmarkCount);
         }
 
         private static TimeSpan GetEstimatedFinishTime(in StartedClock runsChronometer, int benchmarksToRunCount, int executedBenchmarkCount)
@@ -677,6 +736,37 @@ namespace BenchmarkDotNet.Running
                 logger.WriteLineError($"//    * {validationError.Message}");
                 logger.WriteLine();
             }
+        }
+
+        private static int GetIdToResume(string rootArtifactsFolderPath, string currentLogFileName, BenchmarkRunInfo[] benchmarkRunInfos)
+        {
+            if (benchmarkRunInfos.Any(benchmark => benchmark.Config.Options.IsSet(ConfigOptions.Resume)))
+            {
+                var directoryInfo = new DirectoryInfo(rootArtifactsFolderPath);
+                var logFilesExceptCurrent = directoryInfo
+                    .GetFiles($"{currentLogFileName.Split('-')[0]}*")
+                    .Where(file => Path.GetFileNameWithoutExtension(file.Name) != currentLogFileName)
+                    .ToArray();
+
+                if (logFilesExceptCurrent.Length > 0)
+                {
+                    var previousRunLogFile = logFilesExceptCurrent
+                        .OrderByDescending(o => o.LastWriteTime)
+                        .First();
+
+                    var regex = new Regex("--benchmarkId (.*?) in", RegexOptions.Compiled);
+                    foreach (var line in File.ReadLines(previousRunLogFile.FullName).Reverse())
+                    {
+                        var match = regex.Match(line);
+                        if (match.Success)
+                        {
+                            return int.Parse(match.Groups[1].Value);
+                        }
+                    }
+                }
+            }
+
+            return -1;
         }
     }
 }

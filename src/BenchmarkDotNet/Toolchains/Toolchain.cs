@@ -39,7 +39,7 @@ namespace BenchmarkDotNet.Toolchains
                     benchmarkCase);
             }
 
-            if (runtime is MonoRuntime mono && !benchmarkCase.GetToolchain().IsInProcess)
+            if (runtime is MonoRuntime mono && !mono.IsDotNetBuiltIn && !benchmarkCase.GetToolchain().IsInProcess)
             {
                 if (string.IsNullOrEmpty(mono.CustomPath) && !HostEnvironmentInfo.GetCurrent().IsMonoInstalled.Value)
                 {
@@ -57,14 +57,14 @@ namespace BenchmarkDotNet.Toolchains
             }
         }
 
-        internal static bool IsCliPathInvalid(string customDotNetCliPath, BenchmarkCase benchmarkCase, out ValidationError validationError)
+        internal static bool IsCliPathInvalid(string customDotNetCliPath, BenchmarkCase benchmarkCase, out ValidationError? validationError)
         {
             validationError = null;
 
             if (string.IsNullOrEmpty(customDotNetCliPath) && !HostEnvironmentInfo.GetCurrent().IsDotNetCliInstalled())
             {
                 validationError = new ValidationError(true,
-                    $"BenchmarkDotNet requires dotnet cli to be installed or path to local dotnet cli provided in explicit way using `--cli` argument, benchmark '{benchmarkCase.DisplayInfo}' will not be executed",
+                    $"BenchmarkDotNet requires dotnet SDK to be installed or path to local dotnet cli provided in explicit way using `--cli` argument, benchmark '{benchmarkCase.DisplayInfo}' will not be executed",
                     benchmarkCase);
 
                 return true;

@@ -5,7 +5,7 @@ name: BenchmarkDotNet templates
 
 # BenchmarkDotNet templates
 
-BenchmarkDotNet provides project templates to setup your benchmarks easily 
+BenchmarkDotNet provides project templates to setup your benchmarks easily.  
 The template exists for each major .NET language ([C#](https://learn.microsoft.com/dotnet/csharp/), [F#](https://learn.microsoft.com/dotnet/fsharp/) and [VB](https://learn.microsoft.com/dotnet/visual-basic/)) with equivalent features and structure.
 
 ## How to install the templates
@@ -13,13 +13,13 @@ The template exists for each major .NET language ([C#](https://learn.microsoft.c
 The templates requires the [.NET Core SDK](https://www.microsoft.com/net/download). Once installed, run the following command to install the templates:
 
 ```log
-dotnet new -i BenchmarkDotNet.Templates
+dotnet new install BenchmarkDotNet.Templates
 ```
 
 If you want to uninstall all BenchmarkDotNet templates:
 
 ```log
-dotnet new -u BenchmarkDotNet.Templates
+dotnet new uninstall BenchmarkDotNet.Templates
 ```
 
 The template is a nuget package distributed over nuget: [BenchmarkDotNet.Templates](https://www.nuget.org/packages/BenchmarkDotNet.Templates/).
@@ -43,21 +43,20 @@ dotnet new benchmark -lang VB
 
 The template projects has five additional options - all of them are optional.
 
-By default a class library project targeting netstandard2.0 is created.
-You can specify `-f` or `--frameworks` to change targeting to one or more frameworks:
+By default a console app project targeting `net6.0` is created.
+This lets you run the benchmarks from console (`dotnet run`) or from your favorite IDE.  
+
+The option `-f` or `--framework` changes the target framework:
 
 ```log
-dotnet new benchmark -f netstandard2.0;net472
+dotnet new benchmark -f net472
 ```
 
-The option `--console-app` creates a console app project targeting `netcoreapp3.0` with an entry point:
+You can specify `--console-app=false` to create a class library project targeting `netstandard2.0` by default:
 
 ```log
-dotnet new benchmark --console-app
+dotnet new benchmark --console-app=false
 ```
-
-This lets you run the benchmarks from console (`dotnet run`) or from your favorite IDE.
-**Note:** option `-f` or `--frameworks` will be ignored when `--console-app` is set.
 
 The option `-b` or `--benchmarkName` sets the name of the benchmark class:
 
